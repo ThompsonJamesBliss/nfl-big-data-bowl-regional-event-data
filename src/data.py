@@ -50,11 +50,14 @@ def match_targets(plays, players, scout):
 
 def _one_game(path, roles):
     t = pd.read_csv(path, usecols=["gameId", "playId", "nflId", "frameId", "team",
-                                   "playDirection", "x", "y", "event"])
+                                   "playDirection", "x", "y", "s", "dir", "event"])
     t["event"] = t["event"].fillna("None")  # some files use NaN for untagged frames, others "None"
     left = t.playDirection == "left"  # normalize so the offense always moves toward +x
     t.loc[left, "x"] = 120 - t.loc[left, "x"]
     t.loc[left, "y"] = 53.3 - t.loc[left, "y"]
+    t.loc[left, "dir"] = (t.loc[left, "dir"] + 180) % 360
+    rad = np.deg2rad(t["dir"])  # dir: 0 deg = +y, 90 deg = +x
+    t["vx"], t["vy"] = t.s * np.sin(rad), t.s * np.cos(rad)
 
     ev = t[["playId", "frameId", "event"]].drop_duplicates()
     snap = ev[ev.event.isin(SNAP)].groupby("playId").frameId.min().rename("snap")
@@ -73,14 +76,18 @@ def _one_game(path, roles):
     ])
     x = t.merge(frames, on=["playId", "frameId"]).merge(roles, on=["gameId", "playId", "nflId"])
     rec = x[x.pff_role == "Pass Route"]
-    dfn = x.loc[x.pff_role == "Coverage", ["playId", "when", "nflId", "x", "y"]]
+    dfn = x.loc[x.pff_role == "Coverage", ["playId", "when", "nflId", "x", "y", "vx", "vy"]]
     j = rec.merge(dfn, on=["playId", "when"], suffixes=("", "_d"))
     j["sep"] = np.hypot(j.x - j.x_d, j.y - j.y_d)
     j = j.loc[j.groupby(["playId", "when", "nflId"]).sep.idxmin()]
+    # Closing speed (yd/s): how fast the gap to the nearest defender is shrinking. Positive = closing.
+    ux, uy = (j.x - j.x_d) / j.sep, (j.y - j.y_d) / j.sep
+    j["closing"] = (j.vx_d - j.vx) * ux + (j.vy_d - j.vy) * uy
 
-    w = j.set_index(["gameId", "playId", "nflId", "when"])[["sep", "x", "y", "nflId_d"]].unstack("when")
+    w = j.set_index(["gameId", "playId", "nflId", "when"])[["sep", "x", "y", "s", "closing", "nflId_d"]].unstack("when")
     w.columns = [f"{a}_{b}" for a, b in w.columns]
-    w = w.reset_index().rename(columns={"nflId_d_throw": "defId"}).drop(columns=["x_pre", "y_pre", "nflId_d_pre"])
+    w = w.reset_index().rename(columns={"nflId_d_throw": "defId"}).drop(
+        columns=["x_pre", "y_pre", "s_pre", "closing_pre", "nflId_d_pre"])
     w = w.join(win[["snap", "end", "end_event"]], on="playId").join(los, on="playId")
     w["depth"] = w.x_throw - w.los
     w["ttt"] = (w.end - w.snap) / 10

@@ -5,6 +5,7 @@ matplotlib.use("Agg")
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from matplotlib.ticker import PercentFormatter
 
 from src.data import load_play
@@ -148,3 +149,53 @@ def play_chart(p, r, path, receiver=None):
                  f"{desc}", loc="left", fontsize=10)
     _save(fig, path)
     return row.gameId, row.playId
+
+
+def openness_model_chart(cv, ev, path):
+    """Left: the score is calibrated. Right: same separation is worth less when the defender is closing."""
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4.8))
+    b = cv.assign(bin=(cv.cv_pred * 10).clip(1, 9).astype(int))
+    g = b.groupby("bin").agg(pred=("cv_pred", "mean"), actual=("passResult", lambda s: (s == "C").mean()),
+                             n=("cv_pred", "size"))
+    ax = axes[0]
+    ax.plot([0, 1], [0, 1], color="grey", ls="--", lw=1)
+    ax.scatter(g.pred, g.actual, s=g.n / 5, color=C_OPEN, zorder=3)
+    ax.xaxis.set_major_formatter(PercentFormatter(1)); ax.yaxis.set_major_formatter(PercentFormatter(1))
+    ax.set(xlim=(0, 1), ylim=(0, 1), xlabel="Openness score (predicted completion, held-out games)",
+           ylabel="Actual completion rate")
+    ax.set_title(f"The score means what it says\nAUC {ev.loc['openness model', 'AUC']:.3f} vs "
+                 f"{ev.loc['separation only', 'AUC']:.3f} for separation alone", loc="left", fontsize=11)
+
+    ax = axes[1]
+    c = cv.assign(sep_bin=pd.cut(cv.sep_throw, [0, 1, 2, 3, 4, 6, 60], labels=["0-1", "1-2", "2-3", "3-4", "4-6", "6+"]),
+                  closing_grp=np.select([cv.closing_throw > 1, cv.closing_throw < -1],
+                                        ["Defender closing (> 1 yd/s)", "Defender falling away (> 1 yd/s)"], "Steady"))
+    t = c[c.closing_grp != "Steady"].groupby(["sep_bin", "closing_grp"], observed=True).passResult.apply(
+        lambda s: (s == "C").mean()).unstack()
+    t.plot(ax=ax, marker="o", color=[C_IGN, C_OPEN])
+    ax.yaxis.set_major_formatter(PercentFormatter(1))
+    ax.set(xlabel="Yards to nearest defender at the throw", ylabel="Completion rate")
+    ax.set_title("Same separation, different openness:\nwhere the defender is heading matters", loc="left", fontsize=11)
+    ax.legend(title="", fontsize=9)
+    _save(fig, path)
+
+
+def openness_receivers_chart(sc, path, top=15, min_down=30):
+    q = sc[sc.qualified & (sc.routes_past_sticks >= min_down)].nlargest(top, "openness_past_sticks").iloc[::-1]
+    pos_color = {"WR": "#4C72B0", "TE": "#DD8452", "RB": "#55A868"}
+    fig, ax = plt.subplots(figsize=(10, 7))
+    lab = q.displayName + "  (" + q.officialPosition + ", " + q.possessionTeam + ")"
+    ax.barh(lab, q.openness_past_sticks, color=q.officialPosition.map(pos_color))
+    league = sc[sc.qualified & (sc.routes_past_sticks >= min_down)].openness_past_sticks.median()
+    ax.axvline(league, color="k", ls="--", lw=1)
+    ax.text(league, len(q) - 0.4, f" median {league:.0f}", fontsize=9)
+    for i, (_, r) in enumerate(q.iterrows()):
+        ax.text(r.openness_past_sticks + 0.3, i, f"{r.openness_past_sticks:.1f}  ({r.routes_past_sticks:.0f} routes)",
+                va="center", fontsize=8.5)
+    lo = q.openness_past_sticks.min() - 8
+    ax.set_xlim(lo, q.openness_past_sticks.max() + 6)
+    ax.set(xlabel="Average openness score on routes at or past the first-down marker (0-100)", ylabel="")
+    handles = [patches.Patch(color=v, label=k) for k, v in pos_color.items() if k in set(q.officialPosition)]
+    ax.legend(handles=handles, loc="lower right", fontsize=9)
+    ax.set_title(f"Most open receivers past the sticks ({min_down}+ such routes)", loc="left", fontweight="bold")
+    _save(fig, path)

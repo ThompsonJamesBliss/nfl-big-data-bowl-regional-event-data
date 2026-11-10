@@ -14,6 +14,7 @@ from src import plots
 from src.data import load_tables, routes_at_throw
 from src.metric import (build_plays, build_routes, flag_ignored, qb_table, receiver_table, sensitivity,
                         situation_summary)
+from src.openness import evaluate, fit_and_score, receiver_scores
 
 OUT = Path(__file__).resolve().parent.parent / "outputs"
 
@@ -51,6 +52,20 @@ def main(refresh=False):
     plots.receiver_chart(rt, OUT / "2_receivers.png")
     plots.qb_chart(qt, OUT / "3_qbs.png")
     plots.play_chart(p, r, OUT / "4_play.png", receiver="Justin Jefferson")
+
+    # Openness score: separation turned into a 0-100 completion probability.
+    ev, cv = evaluate(r)
+    scored, coefs = fit_and_score(r)
+    sc = receiver_scores(scored)
+    with pd.option_context("display.width", 160, "display.precision", 3):
+        print("\nOpenness model, 5-fold cross-validation grouped by game:")
+        print(ev, "\n")
+    ev.to_csv(OUT / "openness_model.csv")
+    coefs.rename("standardized coefficient").to_csv(OUT / "openness_coefficients.csv")
+    sc.to_csv(OUT / "openness_receivers.csv", index=False)
+    plots.openness_model_chart(cv, ev, OUT / "5_openness_model.png")
+    plots.openness_receivers_chart(sc, OUT / "6_openness_receivers.png")
+    assert ev.loc["openness model", "AUC"] > ev.loc["separation only", "AUC"]
 
     # Sanity checks: fail loudly if the pipeline drifts.
     assert len(p) > 7000, "too few plays with an identified target"
