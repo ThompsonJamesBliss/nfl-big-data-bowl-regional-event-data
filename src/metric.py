@@ -42,8 +42,36 @@ def build_routes(t):
     r = r.join(rush.astype(bool), on=["gameId", "playId"]).fillna({"pressured": False})
 
     r["past_sticks"] = r.depth >= r.yardsToGo
-    r["open_down"] = (r.sep_throw >= OPEN_YDS) & (r.sep_pre >= OPEN_YDS) & r.past_sticks
+    return set_open(r, OPEN_YDS)
+
+
+def set_open(r, open_yds, require_pre=True):
+    r = r.copy()
+    clear = r.sep_throw >= open_yds
+    if require_pre:
+        clear &= r.sep_pre >= open_yds
+    r["open_down"] = clear & r.past_sticks
     return r
+
+
+def sensitivity(r):
+    """Re-run the headline comparison under other definitions of 'open' and in man coverage only."""
+    rows = []
+    variants = [(f"{y:g}+ yds, also 0.5 s before", y, True, None) for y in (2, 3, 4, 5)]
+    variants += [("3+ yds at the throw only", 3, False, None),
+                 ("3+ yds, man coverage only", 3, True, "Man"),
+                 ("3+ yds, zone coverage only", 3, True, "Zone")]
+    for label, yds, pre, cov in variants:
+        rr = r if cov is None else r[r.pff_passCoverageType == cov]
+        p = build_plays(set_open(rr, yds, pre))
+        s = p.groupby("situation").first_down.mean()
+        rows.append({"definition": label, "throws": len(p), "miss_share": p.miss.mean(),
+                     "fd_threw_open": s.get("Threw to the open man"),
+                     "fd_ignored": s.get("Open man ignored"),
+                     "fd_no_option": s.get("No open option past the sticks")})
+    out = pd.DataFrame(rows).set_index("definition")
+    out["gap"] = out.fd_threw_open - out.fd_ignored
+    return out
 
 
 def build_plays(r):
